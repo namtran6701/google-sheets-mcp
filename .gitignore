@@ -8,6 +8,7 @@ wheels/
 **/credentials.json
 **/token.json
 **/service_account.json
+primo-oauth.json
 
 .env
 

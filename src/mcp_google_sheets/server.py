@@ -216,54 +216,66 @@ def get_sheet_data(spreadsheet_id: str,
                    sheet: str,
                    range: Optional[str] = None,
                    include_grid_data: bool = False,
+                   row_offset: int = 0,
+                   row_limit: Optional[int] = None,
                    ctx: Context = None) -> Dict[str, Any]:
     """
     Get data from a specific sheet in a Google Spreadsheet.
-    
+
     Args:
         spreadsheet_id: The ID of the spreadsheet (found in the URL)
         sheet: The name of the sheet
         range: Optional cell range in A1 notation (e.g., 'A1:C10'). If not provided, gets all data.
         include_grid_data: If True, includes cell formatting and other metadata in the response.
-            Note: Setting this to True will significantly increase the response size and token usage
-            when parsing the response, as it includes detailed cell formatting information.
+            Note: Setting this to True will significantly increase the response size and token usage.
             Default is False (returns values only, more efficient).
-    
+        row_offset: Number of rows to skip from the top (default 0). Use for pagination.
+        row_limit: Maximum number of rows to return. If not set, returns all rows after offset.
+
     Returns:
-        Grid data structure with either full metadata or just values from Google Sheets API, depending on include_grid_data parameter
+        Grid data structure with values, plus pagination metadata (total_rows, row_offset, row_limit).
     """
     sheets_service = ctx.request_context.lifespan_context.sheets_service
 
-    # Construct the range - keep original API behavior
     if range:
         full_range = f"{sheet}!{range}"
     else:
         full_range = sheet
-    
+
     if include_grid_data:
-        # Use full API to get all grid data including formatting
         result = sheets_service.spreadsheets().get(
             spreadsheetId=spreadsheet_id,
             ranges=[full_range],
             includeGridData=True
         ).execute()
-    else:
-        # Use values API to get cell values only (more efficient)
-        values_result = sheets_service.spreadsheets().values().get(
-            spreadsheetId=spreadsheet_id,
-            range=full_range
-        ).execute()
-        
-        # Format the response to match expected structure
-        result = {
-            'spreadsheetId': spreadsheet_id,
-            'valueRanges': [{
-                'range': full_range,
-                'values': values_result.get('values', [])
-            }]
-        }
+        return result
 
-    return result
+    values_result = sheets_service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=full_range
+    ).execute()
+
+    all_values = values_result.get('values', [])
+    total_rows = len(all_values)
+
+    paginated = all_values[row_offset:]
+    if row_limit is not None:
+        paginated = paginated[:row_limit]
+
+    return {
+        'spreadsheetId': spreadsheet_id,
+        'valueRanges': [{
+            'range': full_range,
+            'values': paginated
+        }],
+        'pagination': {
+            'total_rows': total_rows,
+            'row_offset': row_offset,
+            'row_limit': row_limit,
+            'returned_rows': len(paginated),
+            'has_more': (row_offset + len(paginated)) < total_rows,
+        }
+    }
 
 @tool(
     annotations=ToolAnnotations(
@@ -307,223 +319,6 @@ def get_sheet_formulas(spreadsheet_id: str,
 
 @tool(
     annotations=ToolAnnotations(
-        title="Update Cells",
-        destructiveHint=True,
-    ),
-)
-def update_cells(spreadsheet_id: str,
-                sheet: str,
-                range: str,
-                data: List[List[Any]],
-                ctx: Context = None) -> Dict[str, Any]:
-    """
-    Update cells in a Google Spreadsheet.
-    
-    Args:
-        spreadsheet_id: The ID of the spreadsheet (found in the URL)
-        sheet: The name of the sheet
-        range: Cell range in A1 notation (e.g., 'A1:C10')
-        data: 2D array of values to update
-    
-    Returns:
-        Result of the update operation
-    """
-    sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
-    # Construct the range
-    full_range = f"{sheet}!{range}"
-    
-    # Prepare the value range object
-    value_range_body = {
-        'values': data
-    }
-    
-    # Call the Sheets API to update values
-    result = sheets_service.spreadsheets().values().update(
-        spreadsheetId=spreadsheet_id,
-        range=full_range,
-        valueInputOption='USER_ENTERED',
-        body=value_range_body
-    ).execute()
-    
-    return result
-
-
-@tool(
-    annotations=ToolAnnotations(
-        title="Batch Update Cells",
-        destructiveHint=True,
-    ),
-)
-def batch_update_cells(spreadsheet_id: str,
-                       sheet: str,
-                       ranges: Dict[str, List[List[Any]]],
-                       ctx: Context = None) -> Dict[str, Any]:
-    """
-    Batch update multiple ranges in a Google Spreadsheet.
-    
-    Args:
-        spreadsheet_id: The ID of the spreadsheet (found in the URL)
-        sheet: The name of the sheet
-        ranges: Dictionary mapping range strings to 2D arrays of values
-               e.g., {'A1:B2': [[1, 2], [3, 4]], 'D1:E2': [['a', 'b'], ['c', 'd']]}
-    
-    Returns:
-        Result of the batch update operation
-    """
-    sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
-    # Prepare the batch update request
-    data = []
-    for range_str, values in ranges.items():
-        full_range = f"{sheet}!{range_str}"
-        data.append({
-            'range': full_range,
-            'values': values
-        })
-    
-    batch_body = {
-        'valueInputOption': 'USER_ENTERED',
-        'data': data
-    }
-    
-    # Call the Sheets API to perform batch update
-    result = sheets_service.spreadsheets().values().batchUpdate(
-        spreadsheetId=spreadsheet_id,
-        body=batch_body
-    ).execute()
-    
-    return result
-
-
-@tool(
-    annotations=ToolAnnotations(
-        title="Add Rows",
-        destructiveHint=True,
-    ),
-)
-def add_rows(spreadsheet_id: str,
-             sheet: str,
-             count: int,
-             start_row: Optional[int] = None,
-             ctx: Context = None) -> Dict[str, Any]:
-    """
-    Add rows to a sheet in a Google Spreadsheet.
-    
-    Args:
-        spreadsheet_id: The ID of the spreadsheet (found in the URL)
-        sheet: The name of the sheet
-        count: Number of rows to add
-        start_row: 0-based row index to start adding. If not provided, adds at the beginning.
-    
-    Returns:
-        Result of the operation
-    """
-    sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
-    # Get sheet ID
-    spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-    sheet_id = None
-    
-    for s in spreadsheet['sheets']:
-        if s['properties']['title'] == sheet:
-            sheet_id = s['properties']['sheetId']
-            break
-            
-    if sheet_id is None:
-        return {"error": f"Sheet '{sheet}' not found"}
-    
-    # Prepare the insert rows request
-    request_body = {
-        "requests": [
-            {
-                "insertDimension": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "dimension": "ROWS",
-                        "startIndex": start_row if start_row is not None else 0,
-                        "endIndex": (start_row if start_row is not None else 0) + count
-                    },
-                    "inheritFromBefore": start_row is not None and start_row > 0
-                }
-            }
-        ]
-    }
-    
-    # Execute the request
-    result = sheets_service.spreadsheets().batchUpdate(
-        spreadsheetId=spreadsheet_id,
-        body=request_body
-    ).execute()
-    
-    return result
-
-
-@tool(
-    annotations=ToolAnnotations(
-        title="Add Columns",
-        destructiveHint=True,
-    ),
-)
-def add_columns(spreadsheet_id: str,
-                sheet: str,
-                count: int,
-                start_column: Optional[int] = None,
-                ctx: Context = None) -> Dict[str, Any]:
-    """
-    Add columns to a sheet in a Google Spreadsheet.
-    
-    Args:
-        spreadsheet_id: The ID of the spreadsheet (found in the URL)
-        sheet: The name of the sheet
-        count: Number of columns to add
-        start_column: 0-based column index to start adding. If not provided, adds at the beginning.
-    
-    Returns:
-        Result of the operation
-    """
-    sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
-    # Get sheet ID
-    spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-    sheet_id = None
-    
-    for s in spreadsheet['sheets']:
-        if s['properties']['title'] == sheet:
-            sheet_id = s['properties']['sheetId']
-            break
-            
-    if sheet_id is None:
-        return {"error": f"Sheet '{sheet}' not found"}
-    
-    # Prepare the insert columns request
-    request_body = {
-        "requests": [
-            {
-                "insertDimension": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "dimension": "COLUMNS",
-                        "startIndex": start_column if start_column is not None else 0,
-                        "endIndex": (start_column if start_column is not None else 0) + count
-                    },
-                    "inheritFromBefore": start_column is not None and start_column > 0
-                }
-            }
-        ]
-    }
-    
-    # Execute the request
-    result = sheets_service.spreadsheets().batchUpdate(
-        spreadsheetId=spreadsheet_id,
-        body=request_body
-    ).execute()
-    
-    return result
-
-
-@tool(
-    annotations=ToolAnnotations(
         title="List Sheets",
         readOnlyHint=True,
     ),
@@ -547,144 +342,6 @@ def list_sheets(spreadsheet_id: str, ctx: Context = None) -> List[str]:
     sheet_names = [sheet['properties']['title'] for sheet in spreadsheet['sheets']]
     
     return sheet_names
-
-
-@tool(
-    annotations=ToolAnnotations(
-        title="Copy Sheet",
-        destructiveHint=True,
-    ),
-)
-def copy_sheet(src_spreadsheet: str,
-               src_sheet: str,
-               dst_spreadsheet: str,
-               dst_sheet: str,
-               ctx: Context = None) -> Dict[str, Any]:
-    """
-    Copy a sheet from one spreadsheet to another.
-    
-    Args:
-        src_spreadsheet: Source spreadsheet ID
-        src_sheet: Source sheet name
-        dst_spreadsheet: Destination spreadsheet ID
-        dst_sheet: Destination sheet name
-    
-    Returns:
-        Result of the operation
-    """
-    sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
-    # Get source sheet ID
-    src = sheets_service.spreadsheets().get(spreadsheetId=src_spreadsheet).execute()
-    src_sheet_id = None
-    
-    for s in src['sheets']:
-        if s['properties']['title'] == src_sheet:
-            src_sheet_id = s['properties']['sheetId']
-            break
-            
-    if src_sheet_id is None:
-        return {"error": f"Source sheet '{src_sheet}' not found"}
-    
-    # Copy the sheet to destination spreadsheet
-    copy_result = sheets_service.spreadsheets().sheets().copyTo(
-        spreadsheetId=src_spreadsheet,
-        sheetId=src_sheet_id,
-        body={
-            "destinationSpreadsheetId": dst_spreadsheet
-        }
-    ).execute()
-    
-    # If destination sheet name is different from the default copied name, rename it
-    if 'title' in copy_result and copy_result['title'] != dst_sheet:
-        # Get the ID of the newly copied sheet
-        copy_sheet_id = copy_result['sheetId']
-        
-        # Rename the copied sheet
-        rename_request = {
-            "requests": [
-                {
-                    "updateSheetProperties": {
-                        "properties": {
-                            "sheetId": copy_sheet_id,
-                            "title": dst_sheet
-                        },
-                        "fields": "title"
-                    }
-                }
-            ]
-        }
-        
-        rename_result = sheets_service.spreadsheets().batchUpdate(
-            spreadsheetId=dst_spreadsheet,
-            body=rename_request
-        ).execute()
-        
-        return {
-            "copy": copy_result,
-            "rename": rename_result
-        }
-    
-    return {"copy": copy_result}
-
-
-@tool(
-    annotations=ToolAnnotations(
-        title="Rename Sheet",
-        destructiveHint=True,
-    ),
-)
-def rename_sheet(spreadsheet: str,
-                 sheet: str,
-                 new_name: str,
-                 ctx: Context = None) -> Dict[str, Any]:
-    """
-    Rename a sheet in a Google Spreadsheet.
-    
-    Args:
-        spreadsheet: Spreadsheet ID
-        sheet: Current sheet name
-        new_name: New sheet name
-    
-    Returns:
-        Result of the operation
-    """
-    sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
-    # Get sheet ID
-    spreadsheet_data = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet).execute()
-    sheet_id = None
-    
-    for s in spreadsheet_data['sheets']:
-        if s['properties']['title'] == sheet:
-            sheet_id = s['properties']['sheetId']
-            break
-            
-    if sheet_id is None:
-        return {"error": f"Sheet '{sheet}' not found"}
-    
-    # Prepare the rename request
-    request_body = {
-        "requests": [
-            {
-                "updateSheetProperties": {
-                    "properties": {
-                        "sheetId": sheet_id,
-                        "title": new_name
-                    },
-                    "fields": "title"
-                }
-            }
-        ]
-    }
-    
-    # Execute the request
-    result = sheets_service.spreadsheets().batchUpdate(
-        spreadsheetId=spreadsheet,
-        body=request_body
-    ).execute()
-    
-    return result
 
 
 @tool(
@@ -849,10 +506,9 @@ def get_spreadsheet_info(spreadsheet_id: str) -> str:
     context = mcp.get_lifespan_context()
     sheets_service = context.sheets_service
     
-    # Get spreadsheet metadata
+    # Get spreadsheet metadata including named ranges
     spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-    
-    # Extract relevant information
+
     info = {
         "title": spreadsheet.get('properties', {}).get('title', 'Unknown'),
         "sheets": [
@@ -862,109 +518,18 @@ def get_spreadsheet_info(spreadsheet_id: str) -> str:
                 "gridProperties": sheet['properties'].get('gridProperties', {})
             }
             for sheet in spreadsheet.get('sheets', [])
-        ]
-    }
-    
-    return json.dumps(info, indent=2)
-
-
-@tool(
-    annotations=ToolAnnotations(
-        title="Create Spreadsheet",
-        destructiveHint=True,
-    ),
-)
-def create_spreadsheet(title: str, folder_id: Optional[str] = None, ctx: Context = None) -> Dict[str, Any]:
-    """
-    Create a new Google Spreadsheet.
-    
-    Args:
-        title: The title of the new spreadsheet
-        folder_id: Optional Google Drive folder ID where the spreadsheet should be created.
-                  If not provided, uses the configured default folder or creates in root.
-    
-    Returns:
-        Information about the newly created spreadsheet including its ID
-    """
-    drive_service = ctx.request_context.lifespan_context.drive_service
-    # Use provided folder_id or fall back to configured default
-    target_folder_id = folder_id or ctx.request_context.lifespan_context.folder_id
-
-    # Create the spreadsheet
-    file_body = {
-        'name': title,
-        'mimeType': 'application/vnd.google-apps.spreadsheet',
-    }
-    if target_folder_id:
-        file_body['parents'] = [target_folder_id]
-    
-    spreadsheet = drive_service.files().create(
-        supportsAllDrives=True,
-        body=file_body,
-        fields='id, name, parents'
-    ).execute()
-
-    spreadsheet_id = spreadsheet.get('id')
-    parents = spreadsheet.get('parents')
-    folder_info = f" in folder {target_folder_id}" if target_folder_id else " in root"
-    print(f"Spreadsheet created with ID: {spreadsheet_id}{folder_info}")
-
-    return {
-        'spreadsheetId': spreadsheet_id,
-        'title': spreadsheet.get('name', title),
-        'folder': parents[0] if parents else 'root',
-    }
-
-
-@tool(
-    annotations=ToolAnnotations(
-        title="Create Sheet",
-        destructiveHint=True,
-    ),
-)
-def create_sheet(spreadsheet_id: str,
-                title: str,
-                ctx: Context = None) -> Dict[str, Any]:
-    """
-    Create a new sheet tab in an existing Google Spreadsheet.
-    
-    Args:
-        spreadsheet_id: The ID of the spreadsheet
-        title: The title for the new sheet
-    
-    Returns:
-        Information about the newly created sheet
-    """
-    sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
-    # Define the add sheet request
-    request_body = {
-        "requests": [
+        ],
+        "named_ranges": [
             {
-                "addSheet": {
-                    "properties": {
-                        "title": title
-                    }
-                }
+                "name": nr['name'],
+                "namedRangeId": nr['namedRangeId'],
+                "range": nr.get('range', {})
             }
+            for nr in spreadsheet.get('namedRanges', [])
         ]
     }
-    
-    # Execute the request
-    result = sheets_service.spreadsheets().batchUpdate(
-        spreadsheetId=spreadsheet_id,
-        body=request_body
-    ).execute()
-    
-    # Extract the new sheet information
-    new_sheet_props = result['replies'][0]['addSheet']['properties']
-    
-    return {
-        'sheetId': new_sheet_props['sheetId'],
-        'title': new_sheet_props['title'],
-        'index': new_sheet_props.get('index'),
-        'spreadsheetId': spreadsheet_id
-    }
+
+    return json.dumps(info, indent=2)
 
 
 @tool(
@@ -1002,6 +567,7 @@ def list_spreadsheets(folder_id: Optional[str] = None, ctx: Context = None) -> L
     results = drive_service.files().list(
         q=query,
         spaces='drive',
+        corpora='allDrives',
         includeItemsFromAllDrives=True,
         supportsAllDrives=True,
         fields='files(id, name)',
@@ -1015,137 +581,75 @@ def list_spreadsheets(folder_id: Optional[str] = None, ctx: Context = None) -> L
 
 @tool(
     annotations=ToolAnnotations(
-        title="Share Spreadsheet",
-        destructiveHint=True,
-    ),
-)
-def share_spreadsheet(spreadsheet_id: str,
-                      recipients: List[Dict[str, str]],
-                      send_notification: bool = True,
-                      ctx: Context = None) -> Dict[str, List[Dict[str, Any]]]:
-    """
-    Share a Google Spreadsheet with multiple users via email, assigning specific roles.
-    
-    Args:
-        spreadsheet_id: The ID of the spreadsheet to share.
-        recipients: A list of dictionaries, each containing 'email_address' and 'role'.
-                    The role should be one of: 'reader', 'commenter', 'writer'.
-                    Example: [
-                        {'email_address': 'user1@example.com', 'role': 'writer'},
-                        {'email_address': 'user2@example.com', 'role': 'reader'}
-                    ]
-        send_notification: Whether to send a notification email to the users. Defaults to True.
-
-    Returns:
-        A dictionary containing lists of 'successes' and 'failures'. 
-        Each item in the lists includes the email address and the outcome.
-    """
-    drive_service = ctx.request_context.lifespan_context.drive_service
-    successes = []
-    failures = []
-    
-    for recipient in recipients:
-        email_address = recipient.get('email_address')
-        role = recipient.get('role', 'writer') # Default to writer if role is missing for an entry
-        
-        if not email_address:
-            failures.append({
-                'email_address': None,
-                'error': 'Missing email_address in recipient entry.'
-            })
-            continue
-            
-        if role not in ['reader', 'commenter', 'writer']:
-             failures.append({
-                'email_address': email_address,
-                'error': f"Invalid role '{role}'. Must be 'reader', 'commenter', or 'writer'."
-            })
-             continue
-
-        permission = {
-            'type': 'user',
-            'role': role,
-            'emailAddress': email_address
-        }
-        
-        try:
-            result = drive_service.permissions().create(
-                fileId=spreadsheet_id,
-                body=permission,
-                sendNotificationEmail=send_notification,
-                fields='id'
-            ).execute()
-            successes.append({
-                'email_address': email_address, 
-                'role': role, 
-                'permissionId': result.get('id')
-            })
-        except Exception as e:
-            # Try to provide a more informative error message
-            error_details = str(e)
-            if hasattr(e, 'content'):
-                try:
-                    error_content = json.loads(e.content)
-                    error_details = error_content.get('error', {}).get('message', error_details)
-                except json.JSONDecodeError:
-                    pass # Keep the original error string
-            failures.append({
-                'email_address': email_address,
-                'error': f"Failed to share: {error_details}"
-            })
-            
-    return {"successes": successes, "failures": failures}
-
-
-@tool(
-    annotations=ToolAnnotations(
         title="List Folders",
         readOnlyHint=True,
     ),
 )
-def list_folders(parent_folder_id: Optional[str] = None, ctx: Context = None) -> List[Dict[str, str]]:
+def list_folders(parent_folder_id: Optional[str] = None, include_shared: bool = True, ctx: Context = None) -> List[Dict[str, str]]:
     """
     List all folders in the specified Google Drive folder.
-    If no parent folder is specified, lists folders from 'My Drive' root.
-    
+    If no parent folder is specified, lists folders from 'My Drive' root and optionally shared folders.
+
     Args:
         parent_folder_id: Optional Google Drive folder ID to search within.
                          If not provided, searches the root of 'My Drive'.
-    
+        include_shared: If True (default), also includes folders shared with the user when
+                       no parent_folder_id is specified.
+
     Returns:
         List of folders with their ID, name, and parent information
     """
     drive_service = ctx.request_context.lifespan_context.drive_service
-    
-    query = "mimeType='application/vnd.google-apps.folder'"
-    
-    # If a specific parent folder is provided, search only within that folder
+
+    base_query = "mimeType='application/vnd.google-apps.folder'"
+
     if parent_folder_id:
-        query += f" and '{parent_folder_id}' in parents"
         print(f"Searching for folders in parent folder: {parent_folder_id}")
+        results = drive_service.files().list(
+            q=f"{base_query} and '{parent_folder_id}' in parents",
+            spaces='drive',
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True,
+            fields='files(id, name, parents)',
+            orderBy='name'
+        ).execute()
+        folders = results.get('files', [])
     else:
-        # Search in root of My Drive (folders that don't have any parent folders)
-        query += " and 'root' in parents"
+        # Fetch My Drive root folders
         print("Searching for folders in 'My Drive' root")
-    
-    # List folders
-    results = drive_service.files().list(
-        q=query,
-        spaces='drive',
-        includeItemsFromAllDrives=True,
-        supportsAllDrives=True,
-        fields='files(id, name, parents)',
-        orderBy='name'
-    ).execute()
-    
-    folders = results.get('files', [])
-    
+        my_drive_results = drive_service.files().list(
+            q=f"{base_query} and 'root' in parents",
+            spaces='drive',
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True,
+            fields='files(id, name, parents)',
+            orderBy='name'
+        ).execute()
+        folders = my_drive_results.get('files', [])
+
+        if include_shared:
+            print("Also searching for folders shared with me")
+            shared_results = drive_service.files().list(
+                q=f"{base_query} and sharedWithMe=true",
+                spaces='drive',
+                includeItemsFromAllDrives=True,
+                supportsAllDrives=True,
+                fields='files(id, name, parents)',
+                orderBy='name'
+            ).execute()
+            # Deduplicate by ID
+            seen = {f['id'] for f in folders}
+            for f in shared_results.get('files', []):
+                if f['id'] not in seen:
+                    folders.append(f)
+                    seen.add(f['id'])
+
     return [
         {
-            'id': folder['id'], 
+            'id': folder['id'],
             'name': folder['name'],
             'parent': folder.get('parents', ['root'])[0] if folder.get('parents') else 'root'
-        } 
+        }
         for folder in folders
     ]
 
@@ -1220,87 +724,6 @@ def _column_index_to_letter(index: int) -> str:
         index = index // 26 - 1
     return result
 
-
-def _letter_to_column_index(letter: str) -> int:
-    """Convert A1 notation letter to 0-based column index ('A'=0, 'Z'=25, 'AA'=26, etc.)"""
-    result = 0
-    for char in letter.upper():
-        result = result * 26 + (ord(char) - ord('A') + 1)
-    return result - 1
-
-
-def _parse_a1_notation(range_str: str) -> Dict[str, int]:
-    """
-    Parse A1 notation range to row/column indices.
-    
-    Args:
-        range_str: A1 notation range (e.g., 'A1:C10')
-    
-    Returns:
-        Dictionary containing applicable indices based on the range format.
-        May include: startRowIndex, endRowIndex, startColumnIndex, endColumnIndex.
-        Not all keys are present for all range formats (e.g., 'A:B' has no row indices).
-    """
-    import re
-    
-    # Match patterns like A1, A1:B2, A:B, 1:10
-    match = re.match(r'^([A-Z]+)?(\d+)?(?::([A-Z]+)?(\d+)?)?$', range_str.upper())
-    
-    if not match:
-        raise ValueError(f"Invalid A1 notation: {range_str}")
-    
-    start_col, start_row, end_col, end_row = match.groups()
-    
-    result = {}
-    
-    # Start column
-    if start_col:
-        result['startColumnIndex'] = _letter_to_column_index(start_col)
-    
-    # Start row (A1 notation is 1-based, convert to 0-based)
-    if start_row:
-        result['startRowIndex'] = int(start_row) - 1
-    
-    # End column (exclusive in API, so add 1)
-    if end_col:
-        result['endColumnIndex'] = _letter_to_column_index(end_col) + 1
-    elif start_col:
-        result['endColumnIndex'] = result['startColumnIndex'] + 1
-    
-    # End row (exclusive in API, so no -1 needed)
-    if end_row:
-        result['endRowIndex'] = int(end_row)
-    elif start_row:
-        result['endRowIndex'] = result['startRowIndex'] + 1
-    
-    return result
-
-
-def _get_sheet_id(sheets_service: Any, spreadsheet_id: str, sheet_name: str) -> Optional[int]:
-    """
-    Get the sheet ID for a given sheet name.
-    
-    Args:
-        sheets_service: Google Sheets service instance
-        spreadsheet_id: The spreadsheet ID
-        sheet_name: The name of the sheet
-    
-    Returns:
-        The sheet ID, or None if not found
-    """
-    try:
-        spreadsheet = sheets_service.spreadsheets().get(
-            spreadsheetId=spreadsheet_id,
-            fields='sheets(properties(title,sheetId))'
-        ).execute()
-        
-        for sheet in spreadsheet.get('sheets', []):
-            if sheet['properties']['title'] == sheet_name:
-                return sheet['properties']['sheetId']
-        
-        return None
-    except Exception:
-        return None
 
 
 @tool(
@@ -1384,307 +807,6 @@ def find_in_spreadsheet(spreadsheet_id: str,
 
     except Exception as e:
         return [{'error': f'Search failed: {str(e)}'}]
-
-
-@tool(
-    annotations=ToolAnnotations(
-        title="Batch Update",
-        destructiveHint=True,
-    ),
-)
-def batch_update(spreadsheet_id: str,
-                 requests: List[Dict[str, Any]],
-                 ctx: Context = None) -> Dict[str, Any]:
-    """
-    Execute a batch update on a Google Spreadsheet using the full batchUpdate endpoint.
-    This provides access to all batchUpdate operations including adding sheets, updating properties,
-    inserting/deleting dimensions, formatting, and more.
-    
-    Args:
-        spreadsheet_id: The ID of the spreadsheet (found in the URL)
-        requests: A list of request objects. Each request object can contain any valid batchUpdate operation.
-                 Common operations include:
-                 - addSheet: Add a new sheet
-                 - updateSheetProperties: Update sheet properties (title, grid properties, etc.)
-                 - insertDimension: Insert rows or columns
-                 - deleteDimension: Delete rows or columns
-                 - updateCells: Update cell values and formatting
-                 - updateBorders: Update cell borders
-                 - addConditionalFormatRule: Add conditional formatting
-                 - deleteConditionalFormatRule: Remove conditional formatting
-                 - updateDimensionProperties: Update row/column properties
-                 - and many more...
-                 
-                 Example requests:
-                 [
-                     {
-                         "addSheet": {
-                             "properties": {
-                                 "title": "New Sheet"
-                             }
-                         }
-                     },
-                     {
-                         "updateSheetProperties": {
-                             "properties": {
-                                 "sheetId": 0,
-                                 "title": "Renamed Sheet"
-                             },
-                             "fields": "title"
-                         }
-                     },
-                     {
-                         "insertDimension": {
-                             "range": {
-                                 "sheetId": 0,
-                                 "dimension": "ROWS",
-                                 "startIndex": 1,
-                                 "endIndex": 3
-                             }
-                         }
-                     }
-                 ]
-    
-    Returns:
-        Result of the batch update operation, including replies for each request
-    """
-    sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
-    # Validate input
-    if not requests:
-        return {"error": "requests list cannot be empty"}
-    
-    if not all(isinstance(req, dict) for req in requests):
-        return {"error": "Each request must be a dictionary"}
-    
-    # Prepare the batch update request body
-    request_body = {
-        "requests": requests
-    }
-    
-    # Execute the batch update
-    result = sheets_service.spreadsheets().batchUpdate(
-        spreadsheetId=spreadsheet_id,
-        body=request_body
-    ).execute()
-    
-    return result
-
-
-@tool(
-    annotations=ToolAnnotations(
-        title="Add Chart",
-        destructiveHint=True,
-    ),
-)
-def add_chart(spreadsheet_id: str,
-              sheet: str,
-              chart_type: str,
-              data_range: str,
-              title: Optional[str] = None,
-              x_axis_label: Optional[str] = None,
-              y_axis_label: Optional[str] = None,
-              position_x: int = 0,
-              position_y: int = 0,
-              width: int = 600,
-              height: int = 400,
-              ctx: Context = None) -> Dict[str, Any]:
-    """
-    Add a chart to a Google Spreadsheet.
-    
-    Creates a chart from the specified data range with customizable type, title, and positioning.
-    The chart is added as a floating element on the sheet.
-    
-    Args:
-        spreadsheet_id: The ID of the spreadsheet (found in the URL)
-        sheet: The name of the sheet containing the data
-        chart_type: Type of chart to create. Supported types:
-                   - COLUMN: Vertical bar chart
-                   - BAR: Horizontal bar chart
-                   - LINE: Line chart
-                   - AREA: Area chart
-                   - PIE: Pie chart
-                   - SCATTER: Scatter plot
-                   - COMBO: Combination chart
-                   - HISTOGRAM: Histogram
-        data_range: A1 notation range for chart data (e.g., 'A1:C10'). 
-                   The first row is typically treated as headers.
-        title: Optional title for the chart
-        x_axis_label: Optional label for the X axis (bottom axis)
-        y_axis_label: Optional label for the Y axis (left axis)
-        position_x: Horizontal position offset in pixels from the top-left corner (default: 0)
-        position_y: Vertical position offset in pixels from the top-left corner (default: 0)
-        width: Width of the chart in pixels (default: 600)
-        height: Height of the chart in pixels (default: 400)
-    
-    Returns:
-        Result of the chart creation operation
-    
-    Examples:
-        Create a column chart showing sales data:
-        add_chart(
-            spreadsheet_id="abc123",
-            sheet="Sales",
-            chart_type="COLUMN",
-            data_range="A1:B13",
-            title="Monthly Sales",
-            x_axis_label="Month",
-            y_axis_label="Revenue ($)"
-        )
-        
-        Create a pie chart for market share:
-        add_chart(
-            spreadsheet_id="abc123",
-            sheet="Market",
-            chart_type="PIE",
-            data_range="A1:B5",
-            title="Market Share by Product"
-        )
-    """
-    sheets_service = ctx.request_context.lifespan_context.sheets_service
-    
-    # Validate chart type
-    valid_chart_types = ['COLUMN', 'BAR', 'LINE', 'AREA', 'PIE', 'SCATTER', 'COMBO', 'HISTOGRAM']
-    if chart_type.upper() not in valid_chart_types:
-        return {
-            "error": f"Invalid chart type '{chart_type}'. Must be one of: {', '.join(valid_chart_types)}"
-        }
-    
-    chart_type = chart_type.upper()
-    
-    # Get sheet ID
-    sheet_id = _get_sheet_id(sheets_service, spreadsheet_id, sheet)
-    if sheet_id is None:
-        return {"error": f"Sheet '{sheet}' not found in spreadsheet"}
-    
-    # Parse the A1 notation range
-    try:
-        range_indices = _parse_a1_notation(data_range)
-    except ValueError as e:
-        return {"error": str(e)}
-    
-    # Build the source range for the chart
-    source_range = {
-        "sheetId": sheet_id,
-        **range_indices
-    }
-    
-    # Build chart specification based on chart type
-    # Note: For basic charts, using the same source_range for both domains and series
-    # allows the API to automatically interpret the first column as the domain (X-axis labels)
-    # and subsequent columns as data series (Y-axis values). This is the standard behavior
-    # for most chart types and works correctly for typical use cases.
-    if chart_type == "PIE":
-        # Pie charts use a different spec structure
-        chart_spec = {
-            "pieChart": {
-                "legendPosition": "RIGHT_LEGEND",
-                "domain": {
-                    "sourceRange": {
-                        "sources": [source_range]
-                    }
-                },
-                "series": {
-                    "sourceRange": {
-                        "sources": [source_range]
-                    }
-                }
-            }
-        }
-        if title:
-            chart_spec["title"] = title
-    else:
-        # All other chart types use basicChart spec
-        chart_spec = {
-            "basicChart": {
-                "chartType": chart_type,
-                "legendPosition": "RIGHT_LEGEND",
-                "axis": [],
-                "domains": [{
-                    "domain": {
-                        "sourceRange": {
-                            "sources": [source_range]
-                        }
-                    }
-                }],
-                "series": [{
-                    "series": {
-                        "sourceRange": {
-                            "sources": [source_range]
-                        }
-                    },
-                    "targetAxis": "LEFT_AXIS"
-                }],
-                "headerCount": 1
-            }
-        }
-        
-        # Add title if provided
-        if title:
-            chart_spec["title"] = title
-        
-        # Add axis labels if provided
-        if x_axis_label:
-            chart_spec["basicChart"]["axis"].append({
-                "position": "BOTTOM_AXIS",
-                "title": x_axis_label
-            })
-        else:
-            chart_spec["basicChart"]["axis"].append({
-                "position": "BOTTOM_AXIS"
-            })
-        
-        if y_axis_label:
-            chart_spec["basicChart"]["axis"].append({
-                "position": "LEFT_AXIS",
-                "title": y_axis_label
-            })
-        else:
-            chart_spec["basicChart"]["axis"].append({
-                "position": "LEFT_AXIS"
-            })
-    
-    # Build the add chart request
-    request_body = {
-        "requests": [{
-            "addChart": {
-                "chart": {
-                    "spec": chart_spec,
-                    "position": {
-                        "overlayPosition": {
-                            "anchorCell": {
-                                "sheetId": sheet_id,
-                                "rowIndex": 0,
-                                "columnIndex": 0
-                            },
-                            "offsetXPixels": position_x,
-                            "offsetYPixels": position_y,
-                            "widthPixels": width,
-                            "heightPixels": height
-                        }
-                    }
-                }
-            }
-        }]
-    }
-    
-    # Execute the request
-    try:
-        result = sheets_service.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id,
-            body=request_body
-        ).execute()
-        
-        return {
-            "success": True,
-            "message": f"Chart '{title or chart_type}' added successfully",
-            "chartId": result.get('replies', [{}])[0].get('addChart', {}).get('chart', {}).get('chartId'),
-            "result": result
-        }
-    except Exception as e:
-        return {
-            "error": f"Failed to add chart: {str(e)}"
-        }
 
 
 def main():
