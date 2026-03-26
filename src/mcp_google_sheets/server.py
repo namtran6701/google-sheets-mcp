@@ -172,7 +172,8 @@ mcp = FastMCP("Google Spreadsheet",
               dependencies=["google-auth", "google-auth-oauthlib", "google-api-python-client"],
               lifespan=spreadsheet_lifespan,
               host=_resolved_host,
-              port=_resolved_port)
+              port=_resolved_port,
+              stateless_http=True)
 
 
 def tool(annotations: Optional[ToolAnnotations] = None):

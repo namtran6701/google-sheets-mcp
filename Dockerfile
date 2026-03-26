@@ -42,4 +42,4 @@ COPY --from=builder /app/dist/*.whl /app/
 
 RUN uv pip install /app/*.whl
 
-CMD ["uv", "run", "mcp-google-sheets", "--transport", "sse"]
+CMD ["uv", "run", "mcp-google-sheets", "--transport", "streamable-http"]
