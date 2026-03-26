@@ -810,6 +810,12 @@ def find_in_spreadsheet(spreadsheet_id: str,
         return [{'error': f'Search failed: {str(e)}'}]
 
 
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request):
+    from starlette.responses import JSONResponse
+    return JSONResponse({"status": "healthy"})
+
+
 def main():
     # Log tool filtering configuration if enabled
     if ENABLED_TOOLS is not None:
